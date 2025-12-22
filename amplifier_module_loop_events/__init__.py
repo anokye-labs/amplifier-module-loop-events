@@ -102,8 +102,12 @@ class EventDrivenOrchestrator:
         while self.max_iterations == -1 or iteration < self.max_iterations:
             iteration += 1
 
-            # Get messages from context
-            message_dicts = await context.get_messages()
+            # Get messages for LLM request (context handles compaction internally)
+            if hasattr(context, "get_messages_for_request"):
+                message_dicts = await context.get_messages_for_request()
+            else:
+                # Fallback for simple contexts without the method
+                message_dicts = await context.get_messages()
             message_dicts = list(message_dicts)  # Convert to list for modification
 
             # Append ephemeral injection from prompt:submit if present (not stored in context)
@@ -367,10 +371,7 @@ class EventDrivenOrchestrator:
                     # Continue processing remaining tools - don't let one failure stop all tools
                     continue
 
-            # Check if we should compact context
-            if await context.should_compact():
-                await hooks.emit("context:pre-compact", {})
-                await context.compact()
+            # Note: Context compaction is handled internally by get_messages_for_request()
 
         # Check if we exceeded max iterations (only if not unlimited)
         if self.max_iterations != -1 and iteration >= self.max_iterations and not final_response:
@@ -383,7 +384,10 @@ class EventDrivenOrchestrator:
             )
 
             # Get one final response with the reminder
-            message_dicts = await context.get_messages()
+            if hasattr(context, "get_messages_for_request"):
+                message_dicts = await context.get_messages_for_request()
+            else:
+                message_dicts = await context.get_messages()
             message_dicts = list(message_dicts)
             message_dicts.append(
                 {
