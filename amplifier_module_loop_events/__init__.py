@@ -54,6 +54,8 @@ class EventDrivenOrchestrator:
         max_iter_config = config.get("max_iterations", -1)
         self.max_iterations = int(max_iter_config) if max_iter_config != -1 else -1
         self.default_provider = config.get("default_provider")
+        # Store ephemeral injections from tool:post hooks for next iteration
+        self._pending_ephemeral_injections: list[dict[str, Any]] = []
 
     async def execute(
         self,
@@ -123,6 +125,43 @@ class EventDrivenOrchestrator:
                     }
                 )
 
+            # Apply pending ephemeral injections from tool:post hooks
+            if self._pending_ephemeral_injections:
+                for injection in self._pending_ephemeral_injections:
+                    if (
+                        injection.get("append_to_last_tool_result")
+                        and len(message_dicts) > 0
+                    ):
+                        last_msg = message_dicts[-1]
+                        if last_msg.get("role") == "tool":
+                            original_content = last_msg.get("content", "")
+                            message_dicts[-1] = {
+                                **last_msg,
+                                "content": f"{original_content}\n\n{injection['content']}",
+                            }
+                            logger.debug(
+                                "Applied pending ephemeral injection to last tool result"
+                            )
+                        else:
+                            message_dicts.append(
+                                {
+                                    "role": injection["role"],
+                                    "content": injection["content"],
+                                }
+                            )
+                            logger.debug(
+                                "Last message not a tool result, created new message for injection"
+                            )
+                    else:
+                        message_dicts.append(
+                            {"role": injection["role"], "content": injection["content"]}
+                        )
+                        logger.debug(
+                            "Applied pending ephemeral injection as new message"
+                        )
+                # Clear pending injections after applying
+                self._pending_ephemeral_injections = []
+
             # Convert dicts to ChatRequest for provider
             messages_objects = [Message(**msg) for msg in message_dicts]
 
@@ -130,7 +169,12 @@ class EventDrivenOrchestrator:
             tools_list = None
             if tools:
                 tools_list = [
-                    ToolSpec(name=t.name, description=t.description, parameters=t.input_schema) for t in tools.values()
+                    ToolSpec(
+                        name=t.name,
+                        description=t.description,
+                        parameters=t.input_schema,
+                    )
+                    for t in tools.values()
                 ]
 
             chat_request = ChatRequest(messages=messages_objects, tools=tools_list)
@@ -175,7 +219,10 @@ class EventDrivenOrchestrator:
                     assistant_msg = {
                         "role": "assistant",
                         "content": [
-                            block.model_dump() if hasattr(block, "model_dump") else block for block in response_content
+                            block.model_dump()
+                            if hasattr(block, "model_dump")
+                            else block
+                            for block in response_content
                         ],
                     }
                 else:
@@ -193,15 +240,22 @@ class EventDrivenOrchestrator:
                 assistant_msg = {
                     "role": "assistant",
                     "content": [
-                        block.model_dump() if hasattr(block, "model_dump") else block for block in response_content
+                        block.model_dump() if hasattr(block, "model_dump") else block
+                        for block in response_content
                     ],
-                    "tool_calls": [{"tool": tc.name, "arguments": tc.arguments, "id": tc.id} for tc in tool_calls],
+                    "tool_calls": [
+                        {"tool": tc.name, "arguments": tc.arguments, "id": tc.id}
+                        for tc in tool_calls
+                    ],
                 }
             else:
                 assistant_msg = {
                     "role": "assistant",
                     "content": response.content if response.content else "",
-                    "tool_calls": [{"tool": tc.name, "arguments": tc.arguments, "id": tc.id} for tc in tool_calls],
+                    "tool_calls": [
+                        {"tool": tc.name, "arguments": tc.arguments, "id": tc.id}
+                        for tc in tool_calls
+                    ],
                 }
             # Preserve provider metadata (provider-agnostic passthrough)
             if hasattr(response, "metadata") and response.metadata:
@@ -229,7 +283,9 @@ class EventDrivenOrchestrator:
 
                     if hook_result.action == "deny":
                         logger.info(f"Tool {tool_name} vetoed: {hook_result.reason}")
-                        reason = hook_result.reason or "Tool execution denied by scheduler"
+                        reason = (
+                            hook_result.reason or "Tool execution denied by scheduler"
+                        )
                         await context.add_message(
                             {
                                 "role": "tool",
@@ -242,16 +298,26 @@ class EventDrivenOrchestrator:
                         continue
                     if hook_result.action == "modify":
                         original_tool = tool_name
-                        tool_name = hook_result.data.get("tool", tool_name) if hook_result.data else tool_name
-                        logger.info(f"Tool changed by scheduler: {original_tool} → {tool_name}")
+                        tool_name = (
+                            hook_result.data.get("tool", tool_name)
+                            if hook_result.data
+                            else tool_name
+                        )
+                        logger.info(
+                            f"Tool changed by scheduler: {original_tool} → {tool_name}"
+                        )
 
                     # Emit selection for logging (AFTER decision is made)
                     await hooks.emit(
                         "tool:selected",
                         {
                             "tool": tool_name,
-                            "source": "scheduler" if hook_result.action == "modify" else "llm",
-                            "original_tool": tool_call.name if hook_result.action == "modify" else None,
+                            "source": "scheduler"
+                            if hook_result.action == "modify"
+                            else "llm",
+                            "original_tool": tool_call.name
+                            if hook_result.action == "modify"
+                            else None,
                         },
                     )
 
@@ -267,7 +333,9 @@ class EventDrivenOrchestrator:
                         },
                     )
                     if coordinator:
-                        pre_result = await coordinator.process_hook_result(pre_result, "tool:pre", tool_name)
+                        pre_result = await coordinator.process_hook_result(
+                            pre_result, "tool:pre", tool_name
+                        )
                         if pre_result.action == "deny":
                             # Tool denied by hook - MUST add tool_result for API compliance
                             reason = pre_result.reason or "Tool execution denied"
@@ -323,7 +391,11 @@ class EventDrivenOrchestrator:
                         )
 
                     # Serialize result for logging
-                    result_data = result.model_dump() if hasattr(result, "model_dump") else str(result)
+                    result_data = (
+                        result.model_dump()
+                        if hasattr(result, "model_dump")
+                        else str(result)
+                    )
 
                     # Post-tool hook
                     post_result = await hooks.emit(
@@ -335,7 +407,26 @@ class EventDrivenOrchestrator:
                         },
                     )
                     if coordinator:
-                        await coordinator.process_hook_result(post_result, "tool:post", tool_name)
+                        await coordinator.process_hook_result(
+                            post_result, "tool:post", tool_name
+                        )
+
+                    # Store ephemeral injection from tool:post for next iteration
+                    if (
+                        post_result.action == "inject_context"
+                        and post_result.ephemeral
+                        and post_result.context_injection
+                    ):
+                        self._pending_ephemeral_injections.append(
+                            {
+                                "role": post_result.context_injection_role,
+                                "content": post_result.context_injection,
+                                "append_to_last_tool_result": post_result.append_to_last_tool_result,
+                            }
+                        )
+                        logger.debug(
+                            f"Stored ephemeral injection from tool:post ({tool_name}) for next iteration"
+                        )
 
                     # Add tool result to context (JSON-serialized for dict/list outputs)
                     await context.add_message(
@@ -350,7 +441,10 @@ class EventDrivenOrchestrator:
 
                 except Exception as e:
                     # Safety net: Ensure tool response is ALWAYS added to prevent orphaned tool calls
-                    logger.error(f"Unexpected error executing tool {tool_name}: {e}", exc_info=True)
+                    logger.error(
+                        f"Unexpected error executing tool {tool_name}: {e}",
+                        exc_info=True,
+                    )
 
                     if not response_added:
                         try:
@@ -374,13 +468,23 @@ class EventDrivenOrchestrator:
             # Note: Context compaction is handled internally by get_messages_for_request()
 
         # Check if we exceeded max iterations (only if not unlimited)
-        if self.max_iterations != -1 and iteration >= self.max_iterations and not final_response:
-            logger.warning(f"Max iterations ({self.max_iterations}) reached without final response")
+        if (
+            self.max_iterations != -1
+            and iteration >= self.max_iterations
+            and not final_response
+        ):
+            logger.warning(
+                f"Max iterations ({self.max_iterations}) reached without final response"
+            )
 
             # Inject system reminder to agent before final response
             await hooks.emit(
                 "provider:request",
-                {"provider": provider.__class__.__name__, "iteration": iteration, "max_reached": True},
+                {
+                    "provider": provider.__class__.__name__,
+                    "iteration": iteration,
+                    "max_reached": True,
+                },
             )
 
             # Get one final response with the reminder
@@ -408,11 +512,17 @@ DO NOT mention this iteration limit or reminder to the user explicitly. Simply w
                 tools_list = None
                 if tools:
                     tools_list = [
-                        ToolSpec(name=t.name, description=t.description, parameters=t.input_schema)
+                        ToolSpec(
+                            name=t.name,
+                            description=t.description,
+                            parameters=t.input_schema,
+                        )
                         for t in tools.values()
                     ]
 
-                max_iter_chat_request = ChatRequest(messages=messages_objects, tools=tools_list)
+                max_iter_chat_request = ChatRequest(
+                    messages=messages_objects, tools=tools_list
+                )
 
                 response = await provider.complete(max_iter_chat_request)
                 tool_calls = provider.parse_tool_calls(response)
@@ -430,7 +540,9 @@ DO NOT mention this iteration limit or reminder to the user explicitly. Simply w
                         final_response = "\n\n".join(text_parts) if text_parts else ""
                     else:
                         final_response = content if content else ""
-                    await context.add_message({"role": "assistant", "content": response.content})
+                    await context.add_message(
+                        {"role": "assistant", "content": response.content}
+                    )
 
             except Exception as e:
                 logger.error(f"Error getting final response after max iterations: {e}")
