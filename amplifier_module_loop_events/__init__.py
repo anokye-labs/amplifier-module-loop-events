@@ -87,8 +87,8 @@ class EventDrivenOrchestrator:
             if prompt_submit_result.action == "deny":
                 return f"Operation denied: {prompt_submit_result.reason}"
 
-        # Emit session start
-        await hooks.emit("session:start", {"prompt": prompt})
+        # Emit execution start
+        await hooks.emit("execution:start", {"prompt": prompt})
 
         # Add user message to context
         await context.add_message({"role": "user", "content": prompt})
@@ -547,8 +547,8 @@ DO NOT mention this iteration limit or reminder to the user explicitly. Simply w
             except Exception as e:
                 logger.error(f"Error getting final response after max iterations: {e}")
 
-        # Emit session end
-        await hooks.emit("session:end", {"response": final_response})
+        # Emit execution end
+        await hooks.emit("execution:end", {"response": final_response})
 
         # Emit orchestrator complete event
         await hooks.emit(
